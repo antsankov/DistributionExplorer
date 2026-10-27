@@ -1,0 +1,196 @@
+import SwiftUI
+
+struct DistributionCanvas: View {
+    let movie: SampleMovie
+    let time: Double
+    let showCurve: Bool
+    let resetBallsRequest: UUID
+    let motionEnabled: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var physics: BallPhysics?
+    @State private var playbackTime = 0.0
+    @State private var pendingReset = false
+
+    private struct MotionSession: Equatable {
+        let enabled: Bool
+        let size: CGSize
+        let movieID: UUID
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            // Capture a value in body so sensor updates redraw even when the
+            // parent playback timeline is paused or finished.
+            let snapshot = reduceMotion || !motionEnabled ? nil : physics
+            Canvas { context, size in
+                draw(context: &context, size: size, physics: snapshot)
+            }
+            .task(id: MotionSession(enabled: motionEnabled && scenePhase == .active && !reduceMotion,
+                                    size: geometry.size, movieID: movie.id)) {
+                await trackTilt(size: geometry.size)
+            }
+        }
+        .onChange(of: time, initial: true) { _, value in playbackTime = value }
+        .onChange(of: resetBallsRequest) { _, _ in pendingReset = true }
+    }
+
+    @MainActor
+    private func trackTilt(size: CGSize) async {
+        physics = nil
+        guard !Task.isCancelled, motionEnabled, scenePhase == .active, !reduceMotion,
+              let session = ChartMotion.shared.start() else { return }
+        defer {
+            ChartMotion.shared.stop(session: session)
+        }
+        let plot = plotRect(size: size)
+        let binWidth = Double(plot.width) / Double(movie.experiment.binCount)
+        let columns = max(1, Int(binWidth / 3.5))
+        let radius = min(2.1, binWidth / Double(columns) * 0.4)
+        var world = BallPhysics(
+            homes: movie.particles.map { particle in
+                guard particle.bin != nil else { return .zero }
+                return home(for: particle, plot: plot, columns: columns, binWidth: binWidth)
+            },
+            releases: movie.particles.map { $0.bin == nil ? .infinity : $0.release + SampleMovie.flightDuration },
+            width: plot.width, height: plot.height, radius: radius
+        )
+        var previousTimestamp: Double?
+        var previousOrientation: Int?
+        while !Task.isCancelled {
+            if let sample = ChartMotion.shared.sample {
+                if pendingReset {
+                    world.returnHome(manually: true)
+                    pendingReset = false
+                }
+                if let previousOrientation, previousOrientation != sample.orientation.rawValue {
+                    world.recalibrate()
+                }
+                previousOrientation = sample.orientation.rawValue
+                let dt = previousTimestamp.map { sample.timestamp - $0 } ?? 1.0 / 60
+                world.update(gravityX: sample.x, gravityY: sample.y, deltaTime: dt, playbackTime: playbackTime)
+                physics = world
+                previousTimestamp = sample.timestamp
+            }
+            do { try await Task.sleep(for: .seconds(1.0 / 60)) }
+            catch { return }
+        }
+    }
+
+    private func plotRect(size: CGSize) -> CGRect {
+        CGRect(x: 38, y: 22, width: max(1, size.width - 48), height: max(1, size.height - 50))
+    }
+
+    private func home(for particle: Particle, plot: CGRect, columns: Int, binWidth: Double) -> CGPoint {
+        let config = movie.experiment
+        let column = particle.rank % columns
+        let row = particle.rank / columns
+        let fraction = Double(particle.bin ?? 0) + (Double(column) + 0.5) / Double(columns)
+        let count = (Double(row) + 0.5) * Double(columns)
+        let density = count / Double(config.sampleCount) / config.binWidth
+        let height = Double(plot.height)
+        let y = height - density / movie.maximum * height
+        return CGPoint(x: fraction * binWidth, y: y)
+    }
+
+    private func draw(context: inout GraphicsContext, size: CGSize, physics: BallPhysics?) {
+        let plot = plotRect(size: size)
+        drawAxes(context: &context, plot: plot)
+        let config = movie.experiment
+        let binWidth = Double(plot.width) / Double(config.binCount)
+        let columns = max(1, Int(binWidth / 3.5))
+        let radius = min(2.1, binWidth / Double(columns) * 0.4)
+        var settled = Path()
+        var falling = Path()
+        for (index, particle) in movie.particles.enumerated() {
+            guard time >= particle.release, particle.bin != nil else { continue }
+            let progress = min(1, (time - particle.release) / SampleMovie.flightDuration)
+            let home = home(for: particle, plot: plot, columns: columns, binWidth: binWidth)
+            let x = Double(plot.minX) + Double(home.x)
+            let startY = Double(plot.minY) - 12
+            let travel = Double(home.y) + 12
+            let y = startY + travel * progress * progress
+            let positionX = x + particle.drift * pow(1 - progress, 2)
+            let ball = physics.flatMap { index < $0.balls.count ? $0.balls[index] : nil }
+            var position = CGPoint(x: positionX, y: y)
+            if progress >= 1, let ball, ball.active {
+                position = CGPoint(x: plot.minX + ball.position.x, y: plot.minY + ball.position.y)
+            }
+            let rect = CGRect(
+                x: position.x - radius,
+                y: position.y - radius,
+                width: radius * 2, height: radius * 2
+            )
+            if progress >= 1 { settled.addEllipse(in: rect) }
+            else { falling.addEllipse(in: rect) }
+        }
+        var clipped = context
+        clipped.clip(to: Path(CGRect(x: plot.minX, y: 0, width: plot.width, height: plot.maxY)))
+        clipped.fill(settled, with: .color(config.distribution.color.opacity(0.7)))
+        clipped.fill(falling, with: .color(config.distribution.color))
+        if showCurve {
+            let trace = min(1, max(0, (time - SampleMovie.releaseDuration - SampleMovie.flightDuration) / SampleMovie.traceDuration))
+            if trace > 0 { drawTheory(context: &clipped, plot: plot, progress: trace) }
+        }
+    }
+
+    private func point(x: Double, y: Double, plot: CGRect) -> CGPoint {
+        let domain = movie.experiment.domain
+        return CGPoint(
+            x: plot.minX + (x - domain.lowerBound) / (domain.upperBound - domain.lowerBound) * plot.width,
+            y: plot.maxY - y / movie.maximum * plot.height
+        )
+    }
+
+    private func drawAxes(context: inout GraphicsContext, plot: CGRect) {
+        for index in 0...3 {
+            let probability = movie.maximum * Double(index) / 3
+            let y = plot.maxY - Double(index) / 3 * plot.height
+            var grid = Path()
+            grid.move(to: CGPoint(x: plot.minX, y: y))
+            grid.addLine(to: CGPoint(x: plot.maxX, y: y))
+            context.stroke(grid, with: .color(.secondary.opacity(0.17)), lineWidth: 0.5)
+            context.draw(Text(probability.formatted(.number.precision(.fractionLength(2)))).font(.system(size: 9)).foregroundStyle(.secondary),
+                         at: CGPoint(x: plot.minX - 5, y: y), anchor: .trailing)
+        }
+        let config = movie.experiment
+        let ticks = config.distribution.definition.ticks
+        for tick in ticks {
+            let p = point(x: tick, y: 0, plot: plot)
+            context.draw(Text(tick.formatted(.number.precision(.fractionLength(0...2)))).font(.system(size: 10)).foregroundStyle(.secondary),
+                         at: CGPoint(x: p.x, y: plot.maxY + 12))
+        }
+    }
+
+    private func drawTheory(context: inout GraphicsContext, plot: CGRect, progress: Double) {
+        let config = movie.experiment
+        var path = Path()
+        if config.distribution.isDiscrete {
+            let last = config.binCount - 1
+            let final = min(last, Int(progress * Double(config.binCount)))
+            for k in 0...final {
+                let x = Double(k)
+                let p = point(x: x, y: config.probability(at: x), plot: plot)
+                path.move(to: point(x: x, y: 0, plot: plot))
+                path.addLine(to: p)
+                context.fill(Path(ellipseIn: CGRect(x: p.x - 2.5, y: p.y - 2.5, width: 5, height: 5)), with: .color(.primary))
+            }
+        } else if config.distribution == .uniform {
+            // Preserve the actual endpoints rather than connecting across a jump.
+            let a = config.first
+            let b = a + config.second
+            path.move(to: point(x: a, y: 0, plot: plot))
+            path.addLine(to: point(x: a, y: 1 / config.second, plot: plot))
+            path.addLine(to: point(x: a + (b - a) * progress, y: 1 / config.second, plot: plot))
+            if progress >= 1 { path.addLine(to: point(x: b, y: 0, plot: plot)) }
+        } else {
+            let steps = 400
+            for index in 0...Int(Double(steps) * progress) {
+                let x = config.domain.lowerBound + Double(index) / Double(steps) * (config.domain.upperBound - config.domain.lowerBound)
+                let p = point(x: x, y: config.probability(at: x), plot: plot)
+                if index == 0 { path.move(to: p) } else { path.addLine(to: p) }
+            }
+        }
+        context.stroke(path, with: .color(.primary), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+    }
+}
