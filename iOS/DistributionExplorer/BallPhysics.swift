@@ -29,12 +29,24 @@ struct BallPhysics {
     private var returnStarts: [CGPoint] = []
     private var manualReturn = false
     private var rollingGravity = CGPoint.zero
+    private var nextRelease = Double.infinity
+    private var hasActiveBalls = false
+    // Scratch storage stays in the simulation, never in a published UI snapshot.
+    private var previousPositions: [CGPoint]
+    private var bucketHeads: [Int: Int] = [:]
+    private var nextInBucket: [Int]
+    private var returnEasing = Array(repeating: 0.0, count: 19)
+    private var returnLift = Array(repeating: 0.0, count: 19)
 
     init(homes: [CGPoint], releases: [Double], width: Double, height: Double, radius: Double) {
         balls = zip(homes, releases).map { Ball(home: $0, release: $1, position: $0) }
         self.width = max(radius * 2, width)
         self.height = max(radius * 2, height)
         self.radius = radius
+        nextRelease = balls.map(\.release).min() ?? .infinity
+        previousPositions = homes
+        nextInBucket = Array(repeating: -1, count: balls.count)
+        bucketHeads.reserveCapacity(balls.count)
     }
 
     mutating func recalibrate() {
@@ -54,17 +66,28 @@ struct BallPhysics {
         for i in balls.indices { balls[i].velocity = .zero }
     }
 
-    mutating func update(gravityX: Double, gravityY: Double, deltaTime: Double, playbackTime: Double) {
-        guard gravityX.isFinite, gravityY.isFinite, deltaTime.isFinite, deltaTime > 0 else { return }
+    /// Whether a motion frame needs publishing. Idle sensor samples only update
+    /// tilt detection; they do not invalidate the chart.
+    @discardableResult
+    mutating func update(gravityX: Double, gravityY: Double, deltaTime: Double, playbackTime: Double) -> Bool {
+        guard gravityX.isFinite, gravityY.isFinite, deltaTime.isFinite, deltaTime > 0 else { return false }
         let gravity = CGPoint(x: gravityX, y: gravityY)
         let dt = min(deltaTime, 1.0 / 15)
-        for i in balls.indices where !balls[i].active && playbackTime >= balls[i].release {
-            balls[i].active = true
+        if nextRelease.isFinite && playbackTime >= nextRelease {
+            nextRelease = .infinity
+            for i in balls.indices where !balls[i].active {
+                if balls[i].release.isFinite && playbackTime >= balls[i].release {
+                    balls[i].active = true
+                    hasActiveBalls = true
+                } else {
+                    nextRelease = min(nextRelease, balls[i].release)
+                }
+            }
         }
         guard let reference, let previousGravity else {
             self.reference = gravity
             self.previousGravity = gravity
-            return
+            return false
         }
         let change = hypot(gravity.x - previousGravity.x, gravity.y - previousGravity.y)
         quietTime = change / dt > 0.35 ? 0 : quietTime + dt
@@ -72,20 +95,24 @@ struct BallPhysics {
 
         // A fresh tilt starts/restarts rolling, including during the flight home.
         if hypot(gravity.x - reference.x, gravity.y - reference.y) > 0.055,
-           phase != .rolling, !manualReturn, balls.contains(where: \.active) {
+           phase != .rolling, !manualReturn, hasActiveBalls {
             phase = .rolling
             wakeBalls(gravity: gravity)
             restingTime = 0
             quietTime = 0
         }
+        var needsDisplay = false
         switch phase {
         case .home: break
         case .rolling:
             if hypot(gravity.x - rollingGravity.x, gravity.y - rollingGravity.y) > 0.025 {
                 wakeBalls(gravity: gravity)
             }
-            let steps = Int(ceil(dt * 120))
-            for _ in 0..<steps { roll(gravity: gravity, dt: dt / Double(steps)) }
+            if balls.contains(where: { $0.active && !$0.sleeping }) {
+                let steps = Int(ceil(dt * 120))
+                for _ in 0..<steps { roll(gravity: gravity, dt: dt / Double(steps)) }
+                needsDisplay = true
+            }
             // Sleep individual balls after sustained stillness. Sleeping contact
             // surfaces prevent numerical jitter from keeping a packed pile awake.
             for i in balls.indices where balls[i].active && !balls[i].sleeping {
@@ -108,18 +135,26 @@ struct BallPhysics {
                 returnHome()
             }
         case .returning:
-            returnTime += dt
-            for i in balls.indices where balls[i].active {
-                // A little stagger gives each ball its own floating trajectory.
-                let delay = Double(i % 19) / 19 * 0.4
+            needsDisplay = true
+            // Play the full floating trajectory, including its stagger, at 3×.
+            returnTime += dt * 3
+            // The stagger has only 19 distinct trajectories. Calculate their
+            // easing and lift once, rather than repeating trigonometry per ball.
+            let lift = min(24, height * 0.12)
+            for group in returnEasing.indices {
+                let delay = Double(group) / 19 * 0.4
                 let t = min(1, max(0, (returnTime - delay) / 2.8))
-                let eased = t * t * t * (10 + t * (-15 + 6 * t))
+                returnEasing[group] = t * t * t * (10 + t * (-15 + 6 * t))
+                returnLift[group] = sin(.pi * t) * lift
+            }
+            for i in balls.indices where balls[i].active {
+                let group = i % 19
+                let eased = returnEasing[group]
                 let start = returnStarts[i]
                 balls[i].position = CGPoint(
                     x: start.x + (balls[i].home.x - start.x) * eased,
-                    y: start.y + (balls[i].home.y - start.y) * eased - sin(.pi * t) * min(24, height * 0.12)
+                    y: start.y + (balls[i].home.y - start.y) * eased - returnLift[group]
                 )
-                balls[i].velocity = .zero
             }
             if returnTime >= 3.2 {
                 for i in balls.indices { balls[i].position = balls[i].home }
@@ -128,6 +163,7 @@ struct BallPhysics {
                 self.reference = gravity
             }
         }
+        return needsDisplay
     }
 
     private mutating func wakeBalls(gravity: CGPoint) {
@@ -140,14 +176,16 @@ struct BallPhysics {
     }
 
     private mutating func roll(gravity: CGPoint, dt: Double) {
-        let previousPositions = balls.map(\.position)
+        // Capture sleepers too: an impact can wake them during contact solving.
+        for i in balls.indices { previousPositions[i] = balls[i].position }
+        let damping = exp(-0.6 * dt)
+        let limit = radius / dt
         for i in balls.indices where balls[i].active && !balls[i].sleeping {
-            balls[i].velocity.x = (balls[i].velocity.x + gravity.x * 520 * dt) * exp(-0.6 * dt)
-            balls[i].velocity.y = (balls[i].velocity.y + gravity.y * 520 * dt) * exp(-0.6 * dt)
+            balls[i].velocity.x = (balls[i].velocity.x + gravity.x * 520 * dt) * damping
+            balls[i].velocity.y = (balls[i].velocity.y + gravity.y * 520 * dt) * damping
             // Keep travel below one ball diameter per physics substep so fast,
             // slippery balls still make contact rather than passing through.
             let speed = hypot(balls[i].velocity.x, balls[i].velocity.y)
-            let limit = radius / dt
             if speed > limit {
                 balls[i].velocity.x *= limit / speed
                 balls[i].velocity.y *= limit / speed
@@ -160,19 +198,25 @@ struct BallPhysics {
         let diameter = radius * 2
         let stride = Int(ceil(width / diameter)) + 3
         for _ in 0..<3 {
-            var buckets: [Int: [Int]] = [:]
-            for i in balls.indices where balls[i].active {
+            bucketHeads.removeAll(keepingCapacity: true)
+            // Reverse insertion preserves ascending collision order without
+            // allocating an array for every occupied cell on every pass.
+            for i in balls.indices.reversed() where balls[i].active {
                 let col = Int(balls[i].position.x / diameter)
                 let row = Int(balls[i].position.y / diameter)
-                buckets[row * stride + col, default: []].append(i)
+                let key = row * stride + col
+                nextInBucket[i] = bucketHeads[key] ?? -1
+                bucketHeads[key] = i
             }
             for i in balls.indices where balls[i].active {
                 let col = Int(balls[i].position.x / diameter)
                 let row = Int(balls[i].position.y / diameter)
                 for dy in -1...1 {
                     for dx in -1...1 {
-                        for j in buckets[(row + dy) * stride + col + dx] ?? [] where j > i {
-                            collide(i, j, diameter: diameter)
+                        var j = bucketHeads[(row + dy) * stride + col + dx] ?? -1
+                        while j != -1 {
+                            if j > i { collide(i, j, diameter: diameter) }
+                            j = nextInBucket[j]
                         }
                     }
                 }
@@ -192,8 +236,10 @@ struct BallPhysics {
     }
 
     private mutating func collide(_ i: Int, _ j: Int, diameter: Double) {
+        guard !balls[i].sleeping || !balls[j].sleeping else { return }
         let dx = balls[j].position.x - balls[i].position.x
         let dy = balls[j].position.y - balls[i].position.y
+        guard dx * dx + dy * dy < diameter * diameter else { return }
         let distance = hypot(dx, dy)
         guard distance < diameter else { return }
         let nx = distance > 0.0001 ? dx / distance : 1

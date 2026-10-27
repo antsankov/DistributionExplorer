@@ -10,6 +10,10 @@ struct BallPhysicsChecks {
             var world = BallPhysics(homes: homes, releases: [0, 0], width: 200, height: 160, radius: 2)
             world.update(gravityX: 0, gravityY: 1, deltaTime: dt, playbackTime: 10)
             assert(world.phase == .home && world.balls.map(\.position) == homes)
+            for _ in 0..<120 {
+                assert(!world.update(gravityX: 0.001, gravityY: 1, deltaTime: dt, playbackTime: 10),
+                       "Idle sensor noise must not request a chart redraw")
+            }
             for _ in 0..<Int(rate * 0.5) {
                 world.update(gravityX: 0.6, gravityY: 0.8, deltaTime: dt, playbackTime: 10)
             }
@@ -20,11 +24,19 @@ struct BallPhysicsChecks {
             var returnedSmoothly = false
             for _ in 0..<Int(rate * 20) {
                 let previous = world.balls[0].position
-                world.update(gravityX: 0.6, gravityY: 0.8, deltaTime: dt, playbackTime: 10)
+                let wasSleeping = world.phase == .rolling && world.balls.allSatisfy { !$0.active || $0.sleeping }
+                let redraw = world.update(gravityX: 0.6, gravityY: 0.8, deltaTime: dt, playbackTime: 10)
+                if wasSleeping {
+                    assert(!redraw && world.balls[0].position == previous,
+                           "A sleeping pile must skip simulation and display work while awaiting return")
+                }
+                if world.phase == .home {
+                    assert(redraw, "The final exact home positions must be published")
+                }
                 if world.phase == .returning {
                     sawReturn = true
                     if hypot(previous.x - homes[0].x, previous.y - homes[0].y) > 20 {
-                        assert(hypot(world.balls[0].position.x - previous.x, world.balls[0].position.y - previous.y) < 15,
+                        assert(hypot(world.balls[0].position.x - previous.x, world.balls[0].position.y - previous.y) < 45,
                                "Flight home must be gradual")
                         returnedSmoothly = true
                     }
@@ -47,12 +59,16 @@ struct BallPhysicsChecks {
             let samplesBeforeReset = world.balls.map(\.home)
             world.returnHome(manually: true)
             assert(world.phase == .returning, "Reset must work while balls are still moving")
-            for frame in 0..<Int(rate * 3.5) {
+            var resetDuration = 0.0
+            for frame in 0..<Int(rate * 1.2) {
                 let direction = frame.isMultiple(of: 2) ? -0.6 : 0.6
                 world.update(gravityX: direction, gravityY: 0.8, deltaTime: dt, playbackTime: 10)
+                resetDuration += dt
                 if world.phase == .home { break }
                 assert(world.phase == .returning, "An explicit reset must complete despite further tilt")
             }
+            assert(resetDuration >= 3.2 / 3 - 1e-9 && resetDuration <= 3.2 / 3 + dt + 1e-9,
+                   "The full return, including stagger, must finish three times faster")
             assert(world.phase == .home && world.balls.map(\.position) == homes)
             assert(world.balls.map(\.home) == samplesBeforeReset, "Reset must preserve the sample")
 
@@ -111,6 +127,24 @@ struct BallPhysicsChecks {
             let before = delayed.balls.map(\.position)
             delayed.update(gravityX: .nan, gravityY: 0, deltaTime: dt, playbackTime: 10)
             assert(delayed.balls.map(\.position) == before)
+            assert(!delayed.update(gravityX: 0.6, gravityY: 0.8, deltaTime: 0, playbackTime: 10),
+                   "Duplicate sensor timestamps must not request a redraw")
+            delayed.update(gravityX: 0.6, gravityY: 0.8, deltaTime: dt, playbackTime: 101)
+            assert(delayed.balls[1].active, "A future release must still activate after idle release scans are skipped")
+
+            var sleepers = BallPhysics(homes: homes, releases: [0, 0], width: 200, height: 160, radius: 2)
+            sleepers.update(gravityX: 0, gravityY: 1, deltaTime: dt, playbackTime: 10)
+            for _ in 0..<Int(rate * 20) {
+                sleepers.update(gravityX: 0.6, gravityY: 0.8, deltaTime: dt, playbackTime: 10)
+                if sleepers.phase == .rolling && sleepers.balls.allSatisfy(\.sleeping) { break }
+            }
+            assert(sleepers.phase == .rolling && sleepers.balls.allSatisfy(\.sleeping))
+            assert(sleepers.update(gravityX: -0.6, gravityY: 0.8, deltaTime: dt, playbackTime: 10),
+                   "A fresh tilt must wake a sleeping pile and request display")
+            assert(sleepers.balls.contains { !$0.sleeping })
+            sleepers.returnHome(manually: true)
+            assert(sleepers.update(gravityX: -0.6, gravityY: 0.8, deltaTime: dt, playbackTime: 10),
+                   "Manual reset must animate even after the pile sleeps")
             print("PASS rolling, walls, settling, reset, slippery dense piles, and release timing at \(Int(rate)) Hz")
         }
     }

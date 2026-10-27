@@ -116,6 +116,7 @@ struct ExperimentView: View {
     @State private var explanationExpanded = false
     @State private var resetBallsRequest = UUID()
     @State private var keepBallsLocked = false
+    @State private var ballPhase = BallPhysics.Phase.home
 
     init(distribution: Distribution) {
         self.distribution = distribution
@@ -140,7 +141,8 @@ struct ExperimentView: View {
                         .accessibilityElement(children: .combine)
                         DistributionCanvas(movie: movie, time: time, showCurve: showCurve,
                                            resetBallsRequest: resetBallsRequest,
-                                           motionEnabled: time >= SampleMovie.duration && !keepBallsLocked)
+                                           motionEnabled: time >= SampleMovie.duration && !keepBallsLocked,
+                                           ballPhase: $ballPhase)
                             .frame(height: 260)
                             .accessibilityLabel("\(distribution.title) sampling animation")
                             .accessibilityValue("\(movie.landed(at: time)) of \(experiment.sampleCount) samples landed. Theoretical mean \(experiment.mean.formatted(.number.precision(.fractionLength(2)))).")
@@ -157,8 +159,6 @@ struct ExperimentView: View {
                     }
                     .padding(.vertical, 8)
                 }
-            } footer: {
-                if !chartNote.isEmpty { Text(chartNote) }
             }
 
             Section {
@@ -190,11 +190,6 @@ struct ExperimentView: View {
                         .accessibilityIdentifier("balls.reset")
                         .accessibilityValue(ballControlValue)
                         .accessibilityHint(ballControlHint)
-                        .contextMenu {
-                            if elapsed >= SampleMovie.duration && !keepBallsLocked {
-                                Button("Lock balls", systemImage: "lock.fill") { keepBallsLocked = true }
-                            }
-                        }
                     }
                     .font(.body.weight(.medium))
                     .buttonBorderShape(.capsule)
@@ -228,6 +223,7 @@ struct ExperimentView: View {
                     }
                     Picker("Samples", selection: $experiment.sampleCount) {
                         Text("300").tag(300)
+                        Text("450").tag(450)
                         Text("600").tag(600)
                         Text("1,200").tag(1200)
                     }
@@ -306,46 +302,40 @@ struct ExperimentView: View {
         started.map { $0.addingTimeInterval(max(0, SampleMovie.duration - elapsed) / speed) }
     }
 
-    private var chartNote: String {
-        let tail = movie.outsideCount > 0
-            ? "\(movie.outsideCount) samples fall outside the visible range; they still count toward the total."
-            : ""
-        let shapeNote = distribution.definition.chartNote
-        return [tail, shapeNote, reduceMotion
-                ? "Reduce Motion shows the finished result."
-                : keepBallsLocked
-                    ? "Balls are locked. Tap the lock beside Replay to allow tilt after the curve finishes."
-                    : "Balls unlock after the curve finishes. Tap the lock beside Replay to keep them locked. Once unlocked, tilt to roll or tap Reset balls to bring them home."]
-            .filter { !$0.isEmpty }.joined(separator: " ")
+    private var canResetBalls: Bool {
+        elapsed >= SampleMovie.duration && !keepBallsLocked && ballPhase != .home
     }
 
     private var ballControlTitle: String {
         if keepBallsLocked { return "Unlock balls" }
-        return elapsed < SampleMovie.duration ? "Keep balls locked" : "Reset balls"
+        if canResetBalls { return "Reset balls" }
+        return elapsed < SampleMovie.duration ? "Keep balls locked" : "Lock balls"
     }
 
     private var ballControlSymbol: String {
         if keepBallsLocked { return "lock.fill" }
-        return elapsed < SampleMovie.duration ? "lock" : "arrow.uturn.backward"
+        return canResetBalls ? "arrow.uturn.backward" : "lock"
     }
 
     private var ballControlValue: String {
         if keepBallsLocked { return "Kept locked" }
-        return elapsed < SampleMovie.duration ? "Locked until the curve finishes" : "Unlocked"
+        if elapsed < SampleMovie.duration { return "Locked until the curve finishes" }
+        return canResetBalls ? "Away from home" : "Unlocked"
     }
 
     private var ballControlHint: String {
         if keepBallsLocked { return "Allow the balls to roll once the curve is complete" }
+        if canResetBalls { return "Float the balls back to their original positions" }
         return elapsed < SampleMovie.duration
             ? "Keep the balls locked even after the curve finishes"
-            : "Float the balls back to their original positions. Touch and hold to lock them."
+            : "Keep the balls locked in their original positions"
     }
 
     private func ballControlAction() {
-        if elapsed < SampleMovie.duration || keepBallsLocked {
-            keepBallsLocked.toggle()
-        } else {
+        if canResetBalls {
             resetBallsRequest = UUID()
+        } else {
+            keepBallsLocked.toggle()
         }
     }
 
@@ -395,6 +385,7 @@ struct ExperimentView: View {
     private func replay(newSamples: Bool) {
         if newSamples { seed &+= 1 }
         movie = SampleMovie(experiment: experiment, seed: seed)
+        ballPhase = .home
         elapsed = reduceMotion ? SampleMovie.duration : 0
         started = reduceMotion ? nil : Date()
     }

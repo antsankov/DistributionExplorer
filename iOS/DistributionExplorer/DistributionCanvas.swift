@@ -6,11 +6,18 @@ struct DistributionCanvas: View {
     let showCurve: Bool
     let resetBallsRequest: UUID
     let motionEnabled: Bool
+    @Binding var ballPhase: BallPhysics.Phase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
-    @State private var physics: BallPhysics?
+    @State private var motionFrame: MotionFrame?
     @State private var playbackTime = 0.0
     @State private var pendingReset = false
+
+    private struct MotionFrame {
+        let positions: [CGPoint]
+        let trails: [BallFlightTrails.Batch]
+        let timestamp: Double
+    }
 
     private struct MotionSession: Equatable {
         let enabled: Bool
@@ -22,9 +29,17 @@ struct DistributionCanvas: View {
         GeometryReader { geometry in
             // Capture a value in body so sensor updates redraw even when the
             // parent playback timeline is paused or finished.
-            let snapshot = reduceMotion || !motionEnabled ? nil : physics
-            Canvas { context, size in
-                draw(context: &context, size: size, physics: snapshot)
+            let snapshot = reduceMotion || !motionEnabled ? nil : motionFrame
+            let plot = plotRect(size: geometry.size)
+            let trace = min(1, max(0, (time - SampleMovie.releaseDuration - SampleMovie.flightDuration) / SampleMovie.traceDuration))
+            ZStack {
+                DistributionGuides(movie: movie, plot: plot, curveProgress: nil).equatable()
+                Canvas { context, size in
+                    draw(context: &context, size: size, frame: snapshot)
+                }
+                if showCurve, trace > 0 {
+                    DistributionGuides(movie: movie, plot: plot, curveProgress: trace).equatable()
+                }
             }
             .task(id: MotionSession(enabled: motionEnabled && scenePhase == .active && !reduceMotion,
                                     size: geometry.size, movieID: movie.id)) {
@@ -37,7 +52,9 @@ struct DistributionCanvas: View {
 
     @MainActor
     private func trackTilt(size: CGSize) async {
-        physics = nil
+        motionFrame = nil
+        ballPhase = .home
+        pendingReset = false
         guard !Task.isCancelled, motionEnabled, scenePhase == .active, !reduceMotion,
               let session = ChartMotion.shared.start() else { return }
         defer {
@@ -57,8 +74,13 @@ struct DistributionCanvas: View {
         )
         var previousTimestamp: Double?
         var previousOrientation: Int?
+        var positions = world.balls.map(\.position)
+        var trails = BallFlightTrails()
         while !Task.isCancelled {
-            if let sample = ChartMotion.shared.sample {
+            let now = ProcessInfo.processInfo.systemUptime
+            let hadTrails = trails.hasVisibleTrails
+            var needsDisplay = false
+            if let sample = ChartMotion.shared.sample, sample.timestamp != previousTimestamp {
                 if pendingReset {
                     world.returnHome(manually: true)
                     pendingReset = false
@@ -68,9 +90,24 @@ struct DistributionCanvas: View {
                 }
                 previousOrientation = sample.orientation.rawValue
                 let dt = previousTimestamp.map { sample.timestamp - $0 } ?? 1.0 / 60
-                world.update(gravityX: sample.x, gravityY: sample.y, deltaTime: dt, playbackTime: playbackTime)
-                physics = world
+                let wasReturning = world.phase == .returning
+                if world.update(gravityX: sample.x, gravityY: sample.y, deltaTime: dt, playbackTime: playbackTime) {
+                    positions = world.balls.map(\.position)
+                    needsDisplay = true
+                }
+                let finished = wasReturning && world.phase == .home
+                trails.sample(positions: positions, flying: world.phase == .returning || finished,
+                              at: now, finishing: finished)
+                // Only phase transitions reach the parent controls; ball frames
+                // continue to invalidate just the canvas.
+                if ballPhase != world.phase { ballPhase = world.phase }
                 previousTimestamp = sample.timestamp
+            }
+            // Expire against wall time, including when the sensor has no new
+            // sample. Publish the clearing frame, then stop idle redraws.
+            trails.expire(at: now)
+            if needsDisplay || hadTrails || trails.hasVisibleTrails {
+                motionFrame = MotionFrame(positions: positions, trails: trails.snapshot, timestamp: now)
             }
             do { try await Task.sleep(for: .seconds(1.0 / 60)) }
             catch { return }
@@ -93,9 +130,8 @@ struct DistributionCanvas: View {
         return CGPoint(x: fraction * binWidth, y: y)
     }
 
-    private func draw(context: inout GraphicsContext, size: CGSize, physics: BallPhysics?) {
+    private func draw(context: inout GraphicsContext, size: CGSize, frame: MotionFrame?) {
         let plot = plotRect(size: size)
-        drawAxes(context: &context, plot: plot)
         let config = movie.experiment
         let binWidth = Double(plot.width) / Double(config.binCount)
         let columns = max(1, Int(binWidth / 3.5))
@@ -105,16 +141,16 @@ struct DistributionCanvas: View {
         for (index, particle) in movie.particles.enumerated() {
             guard time >= particle.release, particle.bin != nil else { continue }
             let progress = min(1, (time - particle.release) / SampleMovie.flightDuration)
-            let home = home(for: particle, plot: plot, columns: columns, binWidth: binWidth)
-            let x = Double(plot.minX) + Double(home.x)
-            let startY = Double(plot.minY) - 12
-            let travel = Double(home.y) + 12
-            let y = startY + travel * progress * progress
-            let positionX = x + particle.drift * pow(1 - progress, 2)
-            let ball = physics.flatMap { index < $0.balls.count ? $0.balls[index] : nil }
-            var position = CGPoint(x: positionX, y: y)
-            if progress >= 1, let ball, ball.active {
-                position = CGPoint(x: plot.minX + ball.position.x, y: plot.minY + ball.position.y)
+            let position: CGPoint
+            if progress >= 1, let positions = frame?.positions, index < positions.count {
+                position = CGPoint(x: plot.minX + positions[index].x, y: plot.minY + positions[index].y)
+            } else {
+                let home = home(for: particle, plot: plot, columns: columns, binWidth: binWidth)
+                let remaining = 1 - progress
+                position = CGPoint(
+                    x: plot.minX + home.x + particle.drift * remaining * remaining,
+                    y: plot.minY - 12 + (home.y + 12) * progress * progress
+                )
             }
             let rect = CGRect(
                 x: position.x - radius,
@@ -126,12 +162,37 @@ struct DistributionCanvas: View {
         }
         var clipped = context
         clipped.clip(to: Path(CGRect(x: plot.minX, y: 0, width: plot.width, height: plot.maxY)))
+        if let frame {
+            BallFlightTrailRenderer.draw(context: &clipped, batches: frame.trails, at: frame.timestamp,
+                                         offset: plot.origin, color: config.distribution.color)
+        }
         clipped.fill(settled, with: .color(config.distribution.color.opacity(0.7)))
         clipped.fill(falling, with: .color(config.distribution.color))
-        if showCurve {
-            let trace = min(1, max(0, (time - SampleMovie.releaseDuration - SampleMovie.flightDuration) / SampleMovie.traceDuration))
-            if trace > 0 { drawTheory(context: &clipped, plot: plot, progress: trace) }
+    }
+}
+
+/// Ball frames do not change these inputs. Keep text layout and the completed
+/// theory's probability evaluations out of motion-driven Canvas redraws.
+private struct DistributionGuides: View, Equatable {
+    let movie: SampleMovie
+    let plot: CGRect
+    let curveProgress: Double?
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.movie.id == rhs.movie.id && lhs.plot == rhs.plot && lhs.curveProgress == rhs.curveProgress
+    }
+
+    var body: some View {
+        Canvas { context, _ in
+            if let curveProgress {
+                context.clip(to: Path(CGRect(x: plot.minX, y: 0, width: plot.width, height: plot.maxY)))
+                drawTheory(context: &context, plot: plot, progress: curveProgress)
+            } else {
+                drawAxes(context: &context, plot: plot)
+            }
         }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     private func point(x: Double, y: Double, plot: CGRect) -> CGPoint {

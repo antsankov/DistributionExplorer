@@ -4,7 +4,7 @@ struct Experiment: Equatable, Sendable {
     var distribution: Distribution
     var first: Double
     var second: Double
-    var sampleCount = 600
+    var sampleCount = 450
 
     init(_ distribution: Distribution) {
         self.distribution = distribution
