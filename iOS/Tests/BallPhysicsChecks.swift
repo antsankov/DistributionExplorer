@@ -22,11 +22,13 @@ struct BallPhysicsChecks {
             assert(world.balls[0].position.y > homes[0].y + 15, "Screen gravity must pull balls down")
             var sawReturn = false
             var returnedSmoothly = false
+            var sleepingWait = 0.0
             for _ in 0..<Int(rate * 20) {
                 let previous = world.balls[0].position
                 let wasSleeping = world.phase == .rolling && world.balls.allSatisfy { !$0.active || $0.sleeping }
                 let redraw = world.update(gravityX: 0.6, gravityY: 0.8, deltaTime: dt, playbackTime: 10)
                 if wasSleeping {
+                    sleepingWait += dt
                     assert(!redraw && world.balls[0].position == previous,
                            "A sleeping pile must skip simulation and display work while awaiting return")
                 }
@@ -34,6 +36,10 @@ struct BallPhysicsChecks {
                     assert(redraw, "The final exact home positions must be published")
                 }
                 if world.phase == .returning {
+                    if !sawReturn {
+                        assert(sleepingWait >= 0.13 - 2 * dt && sleepingWait <= 0.13 + dt,
+                               "Settled balls must begin flying home after about 130 ms")
+                    }
                     sawReturn = true
                     if hypot(previous.x - homes[0].x, previous.y - homes[0].y) > 20 {
                         assert(hypot(world.balls[0].position.x - previous.x, world.balls[0].position.y - previous.y) < 45,

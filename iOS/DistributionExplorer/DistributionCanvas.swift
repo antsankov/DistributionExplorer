@@ -7,6 +7,7 @@ struct DistributionCanvas: View {
     let resetBallsRequest: UUID
     let motionEnabled: Bool
     @Binding var ballPhase: BallPhysics.Phase
+    var fittedCurve: DistributionFit? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @State private var motionFrame: MotionFrame?
@@ -38,7 +39,7 @@ struct DistributionCanvas: View {
                     draw(context: &context, size: size, frame: snapshot)
                 }
                 if showCurve, trace > 0 {
-                    DistributionGuides(movie: movie, plot: plot, curveProgress: trace).equatable()
+                    DistributionGuides(movie: movie, plot: plot, curveProgress: trace, fittedCurve: fittedCurve).equatable()
                 }
             }
             .task(id: MotionSession(enabled: motionEnabled && scenePhase == .active && !reduceMotion,
@@ -177,9 +178,13 @@ private struct DistributionGuides: View, Equatable {
     let movie: SampleMovie
     let plot: CGRect
     let curveProgress: Double?
+    var fittedCurve: DistributionFit? = nil
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.movie.id == rhs.movie.id && lhs.plot == rhs.plot && lhs.curveProgress == rhs.curveProgress
+            && lhs.fittedCurve?.family == rhs.fittedCurve?.family
+            && lhs.fittedCurve?.first == rhs.fittedCurve?.first
+            && lhs.fittedCurve?.second == rhs.fittedCurve?.second
     }
 
     var body: some View {
@@ -231,7 +236,7 @@ private struct DistributionGuides: View, Equatable {
             let final = min(last, Int(progress * Double(config.binCount)))
             for k in 0...final {
                 let x = Double(k)
-                let p = point(x: x, y: config.probability(at: x), plot: plot)
+                let p = point(x: x, y: fittedCurve?.probability(x) ?? config.probability(at: x), plot: plot)
                 path.move(to: point(x: x, y: 0, plot: plot))
                 path.addLine(to: p)
                 context.fill(Path(ellipseIn: CGRect(x: p.x - 2.5, y: p.y - 2.5, width: 5, height: 5)), with: .color(.primary))
@@ -248,7 +253,7 @@ private struct DistributionGuides: View, Equatable {
             let steps = 400
             for index in 0...Int(Double(steps) * progress) {
                 let x = config.domain.lowerBound + Double(index) / Double(steps) * (config.domain.upperBound - config.domain.lowerBound)
-                let p = point(x: x, y: config.probability(at: x), plot: plot)
+                let p = point(x: x, y: fittedCurve?.probability(x) ?? config.probability(at: x), plot: plot)
                 if index == 0 { path.move(to: p) } else { path.addLine(to: p) }
             }
         }

@@ -2,6 +2,12 @@
 
 29 distribution guides: Markdown editions of all 19 distributions in the [NIST/SEMATECH e-Handbook of Statistical Methods distribution gallery](https://www.itl.nist.gov/div898/handbook/eda/section3/eda366.htm), plus 10 original guides checked against the SciPy reference. Sources were consulted on 2026-10-25.
 
+## Launch implementation
+
+The iOS explorer includes 17 interactive distributions: Normal, Binomial, Poisson, Uniform, Exponential, Student’s t, Beta, Gamma, Lognormal, Chi-Square, Bernoulli, Geometric, Negative Binomial, Weibull, Pareto, Hypergeometric, and Laplace (Double Exponential). The first ten remain the essentials; the other seven appear under **More to explore**.
+
+The launch controls use Geometric trials starting at 1, Negative Binomial failures starting at 0, a fixed Hypergeometric population of 50, Weibull shape at least 1, and Pareto shape at least 2.5. These are interactive teaching ranges; the guides below describe the wider mathematical families. The fitting tool retains its own candidate set and uses Geometric failures starting at 0.
+
 ## Recommended scope
 
 For a general educational explorer, start with Bernoulli, Binomial, Geometric, Negative Binomial, Hypergeometric, Poisson, Normal, Uniform, Exponential, Gamma, Beta, Lognormal, Student's t, Weibull, and Pareto. Together these cover binary outcomes, counts, waiting times, bounded values, symmetric shapes, and heavy tails.

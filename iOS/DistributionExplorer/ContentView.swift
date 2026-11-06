@@ -3,6 +3,12 @@ import SwiftUI
 extension Distribution {
     var color: Color {
         switch self {
+        case .geometric: .mint
+        case .negativeBinomial: .purple
+        case .weibull: .orange
+        case .pareto: .brown
+        case .hypergeometric: .teal
+        case .laplace: .indigo
         case .bernoulli: .pink
         case .binomial: .pink
         case .studentT: .indigo
@@ -21,57 +27,67 @@ extension Distribution {
 struct DistributionList: View {
     @AppStorage("onboarding.version") private var onboardingVersion = 0
     @State private var showIntroduction = false
+    @State private var searchText = ""
+
+    private var searchQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func matchesSearch(_ distribution: Distribution) -> Bool {
+        searchQuery.isEmpty || distribution.title.localizedStandardContains(searchQuery)
+            || distribution.summary.localizedStandardContains(searchQuery)
+    }
 
     var body: some View {
         NavigationStack {
+            let essentials = Distribution.learningTopics.filter(matchesSearch)
+            let more = Distribution.moreTopics.filter(matchesSearch)
             List {
-                Section {
-                    NavigationLink {
-                        DistributionFitView()
-                    } label: {
-                        Label {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Fit your data").font(.headline)
-                                Text("Enter samples and compare distribution fits")
-                                    .font(.subheadline).foregroundStyle(.secondary)
-                            }.padding(.vertical, 6)
-                        } icon: {
-                            Image(systemName: "chart.xyaxis.line").foregroundStyle(.blue)
-                        }
-                    }
-                    .accessibilityIdentifier("fit.open")
-                }
-                Section {
-                    ForEach(Distribution.learningTopics) { distribution in
-                        NavigationLink(value: distribution) {
-                            HStack(spacing: 14) {
-                                Image(systemName: distribution.symbol)
-                                    .font(.title2)
-                                    .foregroundStyle(distribution.color)
-                                    .frame(width: 32)
-                                    .accessibilityHidden(true)
+                if searchQuery.isEmpty {
+                    Section {
+                        NavigationLink {
+                            DistributionFitView()
+                        } label: {
+                            Label {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(distribution.title).font(.headline)
-                                    Text(distribution.summary)
+                                    Text("Fit your data").font(.headline)
+                                    Text("Enter samples and compare distribution fits")
                                         .font(.subheadline).foregroundStyle(.secondary)
-                                }
-                                .padding(.vertical, 6)
+                                }.padding(.vertical, 6)
+                            } icon: {
+                                Image(systemName: "chart.xyaxis.line").foregroundStyle(.blue)
                             }
                         }
-                        .accessibilityIdentifier("distribution.\(distribution.rawValue)")
+                        .accessibilityIdentifier("fit.open")
                     }
-                } header: {
-                    Text("Ten essentials")
-                } footer: {
-                    Text("Watch random samples fall into a shape. Then compare them with the theoretical distribution.")
                 }
-                Section("More to explore") {
-                    NavigationLink(value: Distribution.bernoulli) {
-                        Label("Bernoulli", systemImage: Distribution.bernoulli.symbol)
+                if !essentials.isEmpty {
+                    Section {
+                        ForEach(essentials) { distribution in
+                            distributionRow(distribution)
+                        }
+                    } header: {
+                        Text("Ten essentials")
+                    } footer: {
+                        Text("Watch random samples fall into a shape. Then compare them with the theoretical distribution.")
                     }
-                    .accessibilityIdentifier("distribution.bernoulli")
+                }
+                if !more.isEmpty {
+                    Section("More to explore") {
+                        ForEach(more) { distribution in
+                            distributionRow(distribution)
+                        }
+                    }
                 }
             }
+            .overlay {
+                if essentials.isEmpty && more.isEmpty {
+                    ContentUnavailableView.search(text: searchQuery)
+                }
+            }
+            .searchable(text: $searchText,
+                        placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: "Search distributions")
             .navigationTitle("Distributions")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -98,6 +114,25 @@ struct DistributionList: View {
             .interactiveDismissDisabled()
         }
     }
+
+    private func distributionRow(_ distribution: Distribution) -> some View {
+        NavigationLink(value: distribution) {
+            HStack(spacing: 14) {
+                Image(systemName: distribution.symbol)
+                    .font(.title2)
+                    .foregroundStyle(distribution.color)
+                    .frame(width: 32)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(distribution.title).font(.headline)
+                    Text(distribution.summary)
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 6)
+            }
+        }
+        .accessibilityIdentifier("distribution.\(distribution.rawValue)")
+    }
 }
 
 struct ExperimentView: View {
@@ -109,7 +144,7 @@ struct ExperimentView: View {
     @State private var seed: UInt64 = 42
     @State private var elapsed = 0.0
     @State private var started: Date?
-    @State private var speed = 2.0
+    @State private var speed = 3.0
     @State private var showCurve = true
     @State private var examplesExpanded = false
     @State private var parametersExpanded = true
@@ -132,7 +167,7 @@ struct ExperimentView: View {
                     let time = currentTime(at: timeline.date)
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Text(stage(at: time)).font(.headline)
+                            Text("\(distribution.title) Distribution").font(.headline)
                             Spacer()
                             Text("\(movie.landed(at: time)) / \(experiment.sampleCount)")
                                 .font(.subheadline.monospacedDigit())
@@ -195,8 +230,8 @@ struct ExperimentView: View {
                     .buttonBorderShape(.capsule)
                     Picker("Speed", selection: $speed) {
                         Text("1×").tag(1.0)
-                        Text("2×").tag(2.0)
-                        Text("4×").tag(4.0)
+                        Text("3×").tag(3.0)
+                        Text("5×").tag(5.0)
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: speed) { old, _ in
@@ -217,6 +252,9 @@ struct ExperimentView: View {
                         parameter(control.title,
                                   value: control.isSecond ? $experiment.second : $experiment.first,
                                   range: control.range, step: control.step)
+                    }
+                    if distribution == .hypergeometric {
+                        LabeledContent("Population size N", value: "50 (fixed)")
                     }
                     if distribution == .uniform {
                         LabeledContent("Maximum b", value: (experiment.first + experiment.second).formatted(.number.precision(.fractionLength(2))))
@@ -255,7 +293,7 @@ struct ExperimentView: View {
                         .padding(.vertical, 4)
                     }
                 } label: {
-                    Text("Examples in nature & society")
+                    Text("Examples in Nature & Society")
                         .font(.headline)
                         .foregroundStyle(.primary)
                 }
@@ -264,6 +302,11 @@ struct ExperimentView: View {
             Section {
                 DisclosureGroup(isExpanded: $explanationExpanded) {
                     Text(distribution.explanation)
+                    if !distribution.definition.chartNote.isEmpty {
+                        Text(distribution.definition.chartNote)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     LabeledContent("Mean", value: experiment.mean.formatted(.number.precision(.fractionLength(2))))
                     LabeledContent("Variance", value: experiment.variance.formatted(.number.precision(.fractionLength(2))))
                     Text(distribution.formula)
@@ -276,7 +319,7 @@ struct ExperimentView: View {
         }
         .listSectionSpacing(16)
         .contentMargins(.top, 18, for: .scrollContent)
-        .navigationTitle(distribution.title)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .tint(distribution.color)
         .onAppear { if started == nil && elapsed == 0 { replay(newSamples: false) } }
@@ -363,12 +406,6 @@ struct ExperimentView: View {
 
     private func currentTime(at date: Date) -> Double {
         min(SampleMovie.duration, elapsed + (started.map { max(0, date.timeIntervalSince($0)) * speed } ?? 0))
-    }
-
-    private func stage(at time: Double) -> String {
-        if time < SampleMovie.releaseDuration + SampleMovie.flightDuration { return "Building the shape" }
-        if time < SampleMovie.duration && showCurve { return "Tracing the theory" }
-        return "Chance, taking shape"
     }
 
     private func pause() {

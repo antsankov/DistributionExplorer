@@ -1,13 +1,21 @@
 import Foundation
 
 enum Distribution: String, CaseIterable, Identifiable, Sendable {
-    case normal, binomial, poisson, uniform, exponential, studentT, beta, gamma, lognormal, chiSquare, bernoulli
+    case normal, binomial, poisson, uniform, exponential, studentT, beta, gamma, lognormal, chiSquare, bernoulli, geometric, negativeBinomial, weibull, pareto, hypergeometric, laplace
 
     var id: String { rawValue }
     static let learningTopics: [Distribution] = [.normal, .binomial, .poisson, .uniform, .exponential, .studentT, .beta, .gamma, .lognormal, .chiSquare]
 
+    static let moreTopics: [Distribution] = [.bernoulli, .geometric, .negativeBinomial, .weibull, .pareto, .hypergeometric, .laplace]
+
     var definition: any DistributionDefinition {
         switch self {
+        case .geometric: GeometricDistribution()
+        case .negativeBinomial: NegativeBinomialDistribution()
+        case .weibull: WeibullDistribution()
+        case .pareto: ParetoDistribution()
+        case .hypergeometric: HypergeometricDistribution()
+        case .laplace: LaplaceDistribution()
         case .bernoulli: BernoulliDistribution()
         case .binomial: BinomialDistribution()
         case .normal: NormalDistribution()

@@ -7,15 +7,74 @@ final class DistributionExplorerUITests: XCTestCase {
         let next = app.buttons["onboarding.continue"]
         if next.waitForExistence(timeout: 2) {
             next.tap()
+            app.buttons["onboarding.distribution.continue"].tap()
+            app.buttons["onboarding.usefulness.continue"].tap()
             app.buttons["onboarding.education.undisclosed"].tap()
         }
+    }
+
+    @MainActor
+    private func openFitter(_ app: XCUIApplication) {
+        app.buttons["fit.open"].tap()
+        let skip = app.buttons["fit.tour.skip"]
+        if skip.waitForExistence(timeout: 2) { skip.tap() }
+    }
+
+    @MainActor
+    func testFitExplainerNavigationAndResults() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-fit.explainer.seen", "NO"]
+        launchExplorer(app)
+        app.buttons["fit.open"].tap()
+        let title = app.staticTexts["fit.tour.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        XCTAssertEqual(title.label, "What did you measure?")
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "fit-explainer-input"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["fit.tour.next"].tap()
+        XCTAssertEqual(title.label, "Choose how to enter it")
+        app.buttons["fit.tour.back"].tap()
+        XCTAssertEqual(title.label, "What did you measure?")
+        app.buttons["fit.tour.skip"].tap()
+        let input = app.textViews["fit.input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        XCTAssertEqual(input.value as? String, "")
+        input.tap()
+        input.typeText("-2, -1, 0, 1, 2")
+        app.buttons["Done"].tap()
+        app.swipeUp()
+        XCTAssertTrue(app.descendants(matching: .any)["fit.result.Normal"].waitForExistence(timeout: 5))
+        app.buttons["fit.explainer"].tap()
+        let expectedTitles = [
+            "What did you measure?", "Choose how to enter it", "Paste your observations",
+            "Try an example", "Compare the candidates", "Does the curve follow your data?",
+            "Check more closely", "Keep the result in perspective"
+        ]
+        for expected in expectedTitles {
+            XCTAssertTrue(title.waitForExistence(timeout: 5))
+            XCTAssertEqual(title.label, expected)
+            if expected == "Does the curve follow your data?" {
+                let plot = XCTAttachment(screenshot: app.screenshot())
+                plot.name = "fit-explainer-histogram"
+                plot.lifetime = .keepAlways
+                add(plot)
+            }
+            app.buttons["fit.tour.next"].tap()
+        }
+        XCTAssertFalse(title.exists)
+        XCTAssertEqual(input.value as? String, "-2, -1, 0, 1, 2")
+        app.buttons["fit.explainer"].tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        app.buttons["fit.tour.skip"].tap()
     }
 
     @MainActor
     func testFitSamplesLiveRankingAndValidation() throws {
         let app = XCUIApplication()
         launchExplorer(app)
-        app.buttons["fit.open"].tap()
+        openFitter(app)
         let input = app.textViews["fit.input"]
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         input.tap()
@@ -43,7 +102,7 @@ final class DistributionExplorerUITests: XCTestCase {
     func testFitFrequencyCounts() throws {
         let app = XCUIApplication()
         launchExplorer(app)
-        app.buttons["fit.open"].tap()
+        openFitter(app)
         app.buttons["fit.kind"].tap()
         app.buttons["Counts"].tap()
         app.buttons["fit.format"].tap()
@@ -88,6 +147,21 @@ final class DistributionExplorerUITests: XCTestCase {
         introduction.tap()
         XCTAssertTrue(app.staticTexts["Understand what formulas mean"].waitForExistence(timeout: 5))
         app.buttons["onboarding.continue"].tap()
+        XCTAssertTrue(app.staticTexts["What is a distribution?"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Imagine timing the same task 450 times. Each ball represents one task’s completion time."].exists)
+        let result = app.staticTexts["onboarding.distribution.result"]
+        XCTAssertTrue(result.waitForExistence(timeout: 8))
+        XCTAssertEqual(result.label, "Best fit: Lognormal Distribution")
+        app.swipeUp()
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "onboarding-distribution-fit"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["onboarding.distribution.replay"].tap()
+        XCTAssertTrue(result.waitForExistence(timeout: 8))
+        app.buttons["onboarding.distribution.continue"].tap()
+        XCTAssertTrue(app.staticTexts["Why are distributions useful?"].waitForExistence(timeout: 5))
+        app.buttons["onboarding.usefulness.continue"].tap()
         XCTAssertTrue(app.staticTexts["What’s your level of education?"].waitForExistence(timeout: 5))
         app.buttons["onboarding.education.undergraduate"].tap()
         XCTAssertTrue(app.buttons["distribution.normal"].waitForExistence(timeout: 5))
@@ -213,6 +287,11 @@ final class DistributionExplorerUITests: XCTestCase {
     }
 
     @MainActor
+    func testLaunchDistributionsAndPlayback() throws {
+        checkExperiments(["geometric", "negativeBinomial", "weibull", "pareto", "hypergeometric", "laplace"])
+    }
+
+    @MainActor
     private func checkExperiments(_ names: [String]) {
         let app = XCUIApplication()
         launchExplorer(app)
@@ -241,7 +320,10 @@ final class DistributionExplorerUITests: XCTestCase {
                 "normal": "Mean μ", "poisson": "Average count λ", "exponential": "Rate λ",
                 "uniform": "Minimum a", "studentT": "Degrees of freedom ν",
                 "beta": "Shape α", "gamma": "Shape α", "lognormal": "Log-scale mean μ",
-                "chiSquare": "Degrees of freedom ν"
+                "chiSquare": "Degrees of freedom ν",
+                "geometric": "Success probability p", "negativeBinomial": "Target successes r",
+                "weibull": "Shape k", "pareto": "Shape α",
+                "hypergeometric": "Successes in population K", "laplace": "Location μ"
             ][name]!
             let slider = app.sliders[expectedControl]
             XCTAssertTrue(slider.waitForExistence(timeout: 3))
@@ -268,7 +350,7 @@ final class DistributionExplorerUITests: XCTestCase {
         curve.tap()
         curve.tap()
         app.swipeDown()
-        app.buttons["2×"].tap()
+        app.buttons["3×"].tap()
         app.buttons["replay"].tap()
         let finished = NSPredicate(format: "value == %@", "Finished")
         expectation(for: finished, evaluatedWith: app.buttons["playback"])
@@ -283,7 +365,7 @@ final class DistributionExplorerUITests: XCTestCase {
     func testCollapsibleSections() throws {
         let app = XCUIApplication()
         launchExplorer(app)
-        let normalScreen = app.navigationBars["Normal"]
+        let normalScreen = app.buttons["playback"]
         if !normalScreen.waitForExistence(timeout: 1) {
             let normal = app.buttons["distribution.normal"]
             let hittable = NSPredicate(format: "exists == true AND hittable == true")

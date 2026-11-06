@@ -131,7 +131,7 @@ struct BallPhysics {
             }
             let allAtRest = balls.allSatisfy { !$0.active || $0.sleeping }
             restingTime = allAtRest && quietTime > 0.4 ? restingTime + dt : 0
-            if restingTime > 0.65 {
+            if restingTime > 0.13 {
                 returnHome()
             }
         case .returning:

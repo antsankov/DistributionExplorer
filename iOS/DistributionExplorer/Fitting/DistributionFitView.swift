@@ -8,6 +8,10 @@ private struct FitRequest: Equatable, Sendable {
 }
 
 struct DistributionFitView: View {
+    @AppStorage("fit.explainer.seen") private var hasSeenExplainer = false
+    @State private var showingExplainer = false
+    @State private var explainerIndex = 0
+    @State private var explainerSteps = FitExplainerStep.steps(hasResults: false)
     @State private var text = ""
     @State private var kind = SampleKind.measurements
     @State private var format = SampleFormat.samples
@@ -21,66 +25,111 @@ struct DistributionFitView: View {
     private var request: FitRequest { FitRequest(text: text, kind: kind, format: format, selected: selected) }
 
     var body: some View {
-        List {
-            Section {
-                Text("Which distribution fits?").font(.title2.bold())
-                Text("Enter observations and compare the shapes that could have produced them. Rankings update as you type.")
-                    .foregroundStyle(.secondary)
-            }
-            Section {
-                Picker("Data type", selection: $kind) {
-                    ForEach(SampleKind.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+        ScrollViewReader { scrollProxy in
+            List {
+                Section {
+                    Text("Which distribution fits?").font(.title2.bold())
+                    Text("Enter observations and compare the shapes that could have produced them. Rankings update as you type.")
+                        .foregroundStyle(.secondary)
                 }
-                .accessibilityIdentifier("fit.kind")
-                Picker("Input format", selection: $format) {
-                    ForEach(SampleFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .accessibilityIdentifier("fit.format")
-                TextEditor(text: $text)
-                    .font(.body.monospaced())
-                    .frame(minHeight: 110)
-                    .focused($editing)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .accessibilityLabel("Sample values")
-                    .accessibilityIdentifier("fit.input")
-                HStack {
-                    Menu("Try an example", systemImage: "sparkles") {
-                        Button("Measurements") { loadExample(.measurements) }
-                        Button("Counts") { loadExample(.counts) }
+                Section {
+                    Picker("Data type", selection: $kind) {
+                        ForEach(SampleKind.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
-                    Spacer()
-                    Button("Clear", role: .destructive) { text = ""; selected = nil }
-                        .disabled(text.isEmpty)
-                        .accessibilityIdentifier("fit.clear")
+                    .accessibilityIdentifier("fit.kind")
+                    .fitExplainerTarget(.kind)
+                    Picker("Input format", selection: $format) {
+                        ForEach(SampleFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    .accessibilityIdentifier("fit.format")
+                    .fitExplainerTarget(.format)
+                    TextEditor(text: $text)
+                        .font(.body.monospaced())
+                        .frame(minHeight: 110)
+                        .focused($editing)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityLabel("Sample values")
+                        .accessibilityIdentifier("fit.input")
+                        .fitExplainerTarget(.input)
+                    HStack {
+                        Menu("Try an example", systemImage: "sparkles") {
+                            Button("Measurements") { loadExample(.measurements) }
+                            Button("Counts") { loadExample(.counts) }
+                        }
+                        .fitExplainerTarget(.examples)
+                        Spacer()
+                        Button("Clear", role: .destructive) { text = ""; selected = nil }
+                            .disabled(text.isEmpty)
+                            .accessibilityIdentifier("fit.clear")
+                    }
+                } header: { Text("Your data") } footer: {
+                    Text(format == .samples
+                         ? "Separate samples with commas, spaces, or new lines. Use a decimal point. Counts are whole-number observations; measurements may also be rounded integers. Up to 10,000 samples, processed on your device."
+                         : "One value and its frequency per line, e.g. 2.5, 4 means four observations of 2.5. Frequencies must be positive whole numbers. Use a decimal point.")
                 }
-            } header: { Text("Your data") } footer: {
-                Text(format == .samples
-                     ? "Separate samples with commas, spaces, or new lines. Use a decimal point. Counts are whole-number observations; measurements may also be rounded integers. Up to 10,000 samples, processed on your device."
-                     : "One value and its frequency per line, e.g. 2.5, 4 means four observations of 2.5. Frequencies must be positive whole numbers. Use a decimal point.")
+                if calculating {
+                    Section { ProgressView("Updating fits…").accessibilityIdentifier("fit.loading") }
+                } else if let report {
+                    results(report)
+                }
+                Section {
+                    Text("Lower AICc is better. The score balances likelihood against the number of fitted parameters, with an extra penalty for small samples. Δ is the difference from the leading score; models within 2 deserve a closer look.")
+                    Text("Support weights are relative to the candidates tested. They are not probabilities that a distribution is true. Even the leading candidate can fit poorly: inspect the histogram and Q–Q plot.")
+                    Text(kind == .measurements
+                         ? "Candidates: Normal, Exponential, Lognormal, and Gamma. Parameters use maximum likelihood; Gamma uses numerical optimization. Positive-only models are skipped when observations fall outside their support."
+                         : "Candidates: Poisson, Geometric (failures before the first success), and Bernoulli for binary data. Binomial needs a known number of trials and is not included.")
+                    Text("Assumes independent observations from one stable process. Mixed populations, rounding, censoring, and trends can change the result. AICc is a ranking heuristic, especially for small samples.")
+                        .foregroundStyle(.secondary)
+                    Link("About likelihood and AIC", destination: URL(string: "https://stat.ethz.ch/R-manual/R-devel/library/stats/html/AIC.html")!)
+                    Link("AICc formula", destination: URL(string: "https://www.mathworks.com/help/econ/information-criteria.html")!)
+                } header: {
+                    Text("How to read the ranking").fitExplainerTarget(.guide)
+                }
+                .font(.footnote)
             }
-            if calculating {
-                Section { ProgressView("Updating fits…").accessibilityIdentifier("fit.loading") }
-            } else if let report {
-                results(report)
+            .padding(.top, showingExplainer ? 32 : 0)
+            .scrollDisabled(showingExplainer)
+            .accessibilityHidden(showingExplainer)
+            .overlayPreferenceValue(FitExplainerAnchors.self) { anchors in
+                if showingExplainer {
+                    GeometryReader { geometry in
+                        let step = explainerSteps[explainerIndex]
+                        FitExplainerOverlay(step: step, index: explainerIndex, count: explainerSteps.count,
+                                            highlight: anchors[step.target].map { geometry[$0] },
+                                            onBack: { explainerIndex = max(0, explainerIndex - 1) },
+                                            onNext: {
+                                                if explainerIndex < explainerSteps.count - 1 { explainerIndex += 1 }
+                                                else { finishExplainer() }
+                                            },
+                                            onClose: finishExplainer)
+                    }
+                }
             }
-            Section("How to read the ranking") {
-                Text("Lower AICc is better. The score balances likelihood against the number of fitted parameters, with an extra penalty for small samples. Δ is the difference from the leading score; models within 2 deserve a closer look.")
-                Text("Support weights are relative to the candidates tested. They are not probabilities that a distribution is true. Even the leading candidate can fit poorly: inspect the histogram and Q–Q plot.")
-                Text(kind == .measurements
-                     ? "Candidates: Normal, Exponential, Lognormal, and Gamma. Parameters use maximum likelihood; Gamma uses numerical optimization. Positive-only models are skipped when observations fall outside their support."
-                     : "Candidates: Poisson, Geometric (failures before the first success), and Bernoulli for binary data. Binomial needs a known number of trials and is not included.")
-                Text("Assumes independent observations from one stable process. Mixed populations, rounding, censoring, and trends can change the result. AICc is a ranking heuristic, especially for small samples.")
-                    .foregroundStyle(.secondary)
-                Link("About likelihood and AIC", destination: URL(string: "https://stat.ethz.ch/R-manual/R-devel/library/stats/html/AIC.html")!)
-                Link("AICc formula", destination: URL(string: "https://www.mathworks.com/help/econ/information-criteria.html")!)
+            .onChange(of: explainerIndex) { _, index in
+                guard showingExplainer else { return }
+                let target = explainerSteps[index].target
+                let anchor: UnitPoint = target == .histogram || target == .qq ? .bottom : .top
+                withAnimation(.easeInOut) { scrollProxy.scrollTo(target, anchor: anchor) }
             }
-            .font(.footnote)
+            .onChange(of: showingExplainer) { _, _ in
+                scrollProxy.scrollTo(FitExplainerTarget.kind, anchor: .top)
+            }
+            .onAppear {
+                if !hasSeenExplainer { startExplainer() }
+            }
         }
         .navigationTitle("Fit your data")
         .navigationBarTitleDisplayMode(.inline)
         .scrollDismissesKeyboard(.interactively)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: startExplainer) {
+                    Label("Explainer", systemImage: "lightbulb")
+                }
+                .accessibilityIdentifier("fit.explainer")
+                .disabled(showingExplainer)
+            }
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
                 Button("Done") { editing = false }
@@ -109,6 +158,18 @@ struct DistributionFitView: View {
             chart = plot
             calculating = false
         }
+    }
+
+    private func startExplainer() {
+        editing = false
+        explainerSteps = FitExplainerStep.steps(hasResults: report?.fits.isEmpty == false)
+        explainerIndex = 0
+        showingExplainer = true
+    }
+
+    private func finishExplainer() {
+        showingExplainer = false
+        hasSeenExplainer = true
     }
 
     @ViewBuilder
@@ -154,12 +215,14 @@ struct DistributionFitView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("fit.result.\(fit.family.rawValue)")
                 }
-            } header: { Text("Best fits among tested distributions") } footer: {
+            } header: {
+                Text("Best fits among tested distributions").fitExplainerTarget(.ranking)
+            } footer: {
                 Text("Percentages show relative support within this candidate set, not certainty.")
             }
             if let chart {
                 Section {
-                    FitHistogram(data: chart)
+                    FitHistogram(data: chart).fitExplainerTarget(.histogram)
                     if chart.groupedCounts {
                         Text("The count range is wide, so the histogram uses grouped bins. Model overlays are omitted; use the Q–Q plot to compare the fit.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -176,7 +239,7 @@ struct DistributionFitView: View {
                         ForEach(report.fits) { Text($0.family.rawValue).tag($0.family) }
                     }
                     .accessibilityIdentifier("fit.qq.model")
-                    FitQQPlot(data: chart)
+                    FitQQPlot(data: chart).fitExplainerTarget(.qq)
                     Text("Points near the diagonal agree with the model. Curves or large departures suggest a mismatch. Up to 100 sample quantiles are shown. Steps are expected for counts; very large shape or rate parameters use approximate model quantiles.")
                         .font(.caption).foregroundStyle(.secondary)
                 } header: { Text("Q–Q plot") }

@@ -228,7 +228,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Distribution Explorer";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Tilt your phone to roll the sample balls and watch them float back into place.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIStatusBarHidden = NO;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				MARKETING_VERSION = 0.1.0;
@@ -251,7 +251,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Distribution Explorer";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Tilt your phone to roll the sample balls and watch them float back into place.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIStatusBarHidden = NO;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				MARKETING_VERSION = 0.1.0;

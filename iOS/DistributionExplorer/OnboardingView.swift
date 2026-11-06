@@ -1,9 +1,11 @@
-// Explains the app’s value, then asks one education question.
+// Introduces the app and probability distributions, then asks one education question.
 import SwiftUI
 
 struct OnboardingView: View {
     var onFinish: () -> Void
     @AppStorage("onboarding.education") private var education = ""
+    @State private var showingDistributionIntroduction = false
+    @State private var showingUsefulness = false
     @State private var choosingEducation = false
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -12,25 +14,32 @@ struct OnboardingView: View {
     var body: some View {
         NavigationStack {
             welcome
-                .navigationDestination(isPresented: $choosingEducation) {
-                    educationQuestion
+                .navigationDestination(isPresented: $showingDistributionIntroduction) {
+                    distributionIntroduction
+                        .navigationDestination(isPresented: $showingUsefulness) {
+                            distributionUsefulness
+                                .navigationDestination(isPresented: $choosingEducation) {
+                                    educationQuestion
+                                }
+                        }
                 }
         }
     }
 
     private var welcome: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
+            VStack(alignment: .leading, spacing: 14) {
                 VStack(spacing: 16) {
-                    Image(systemName: "chart.bar.xaxis")
-                        .font(.system(size: 64))
-                        .foregroundStyle(.blue)
+                    Image("LaunchIcon")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 190, height: 190)
                         .accessibilityHidden(true)
-                    Text("Make sense\nof uncertainty")
+                    Text("Distribution Explorer")
                         .font(.largeTitle.bold())
                         .multilineTextAlignment(.center)
-                    Text("Build intuition for probability by seeing it in action.")
-                        .foregroundStyle(.secondary)
+                    Text("Make sense of uncertainty")
+                        .font(.title3.weight(.medium))
                         .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity)
@@ -48,7 +57,7 @@ struct OnboardingView: View {
             .padding(.bottom, 16)
         }
         .safeAreaInset(edge: .bottom) {
-            Button { choosingEducation = true } label: {
+            Button { showingDistributionIntroduction = true } label: {
                 Text("Continue").frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -59,6 +68,51 @@ struct OnboardingView: View {
             .background(Color(.systemGroupedBackground))
         }
         .background(Color(.systemGroupedBackground))
+    }
+
+    private var distributionIntroduction: some View {
+        DistributionIntroductionView {
+            showingUsefulness = true
+        }
+    }
+
+    private var distributionUsefulness: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                Text("Why are distributions useful?")
+                    .font(.largeTitle.bold())
+                    .accessibilityAddTraits(.isHeader)
+                Text("An average gives you one number. A distribution shows the range of possibilities.")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+
+                feature("chart.bar.xaxis", "See what’s typical",
+                        "Find the completion times where most of the balls collect, and see how much task times vary.")
+                feature("clock.badge.exclamationmark", "Understand the long waits",
+                        "A few tasks take much longer. A distribution helps estimate how often those delays might happen.")
+                feature("calendar", "Make better plans",
+                        "Allow time for variation, rather than expecting every task to finish in the average time.")
+
+                Text("The same idea helps us understand measurement errors, customer arrivals, and other uncertain outcomes.")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 32)
+            .padding(.top, 28)
+            .padding(.bottom, 16)
+        }
+        .safeAreaInset(edge: .bottom) {
+            Button { choosingEducation = true } label: {
+                Text("Continue").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .accessibilityIdentifier("onboarding.usefulness.continue")
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+            .background(Color(.systemGroupedBackground))
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private var educationQuestion: some View {

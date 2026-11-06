@@ -11,6 +11,7 @@ struct SampleMovie: Sendable {
     let id = UUID()
     let experiment: Experiment
     let particles: [Particle]
+    let values: [Double]
     let counts: [Int]
     let outsideCount: Int
     let maximum: Double
@@ -25,9 +26,11 @@ struct SampleMovie: Sendable {
         var random = SeededRandom(state: seed)
         var counts = Array(repeating: 0, count: experiment.binCount)
         var particles: [Particle] = []
+        var values: [Double] = []
         var outside = 0
         for index in 0..<experiment.sampleCount {
             let value = experiment.sample(using: &random)
+            values.append(value)
             let bin = experiment.bin(for: value)
             let rank = bin.map { counts[$0] } ?? 0
             if let bin { counts[bin] += 1 } else { outside += 1 }
@@ -39,6 +42,7 @@ struct SampleMovie: Sendable {
             ))
         }
         self.particles = particles
+        self.values = values
         self.counts = counts
         outsideCount = outside
         let histogramPeak = Double(counts.max() ?? 1) / Double(experiment.sampleCount) / experiment.binWidth
